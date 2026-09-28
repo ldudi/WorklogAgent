@@ -1,0 +1,23 @@
+.build/
+dist/
+.DS_Store
+*.xcuserstate
+.swiftpm/
+
+.verification/
+
+# Private local validation report (contains real activity history)
+docs/SESSION_VERIFICATION.md
+
+# Local credentials and activity stores
+.env
+.env.*
+*.sqlite
+*.sqlite-*
+*.sqlite.*
+*.db
+*.db-*
+*.pem
+*.p12
+*.pfx
+*.mobileprovision
