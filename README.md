@@ -78,7 +78,7 @@ swift run WorklogAgent projects
 swift run WorklogAgent daemon --interval 90
 ```
 
-`daily` is an alias for regenerating today's report. `models` lists installed local models. The default model remains `gemma4:e4b`; up to six representative screenshots are recognized independently before activity reconstruction. Cleaned OCR is secondary evidence, sampled across displays. All model-independent tests use temporary stores and network stubs; no running Ollama is required.
+`daily` is an alias for regenerating today's report. `models` lists installed local models. The default model remains `gemma4:e4b`; a dynamic set of up to 12 distinct screenshots is recognized independently before activity reconstruction. Cleaned OCR is secondary evidence, sampled across displays. All model-independent tests use temporary stores and network stubs; no running Ollama is required.
 
 Default paths:
 
@@ -163,7 +163,7 @@ Daily, weekly, and monthly Markdown query original facts, never earlier reports.
 
 ## Privacy and retention
 
-Structured records, classifications, entities, facts and corrections are retained indefinitely. Up to 24 redacted OCR excerpts (maximum 900 characters each) and six bounded vision descriptions are stored per processing window. Screenshot paths and JustNow frame/span IDs are references; **no screenshots are copied**. References expire under JustNow's own retention, so future reprocessing may lose access to original pixels. Vision descriptions are `INFERRED`; copied OCR is `OBSERVED`. Facts inferred from either retain their evidence IDs, confidence, activity and project associations.
+Structured records, classifications, entities, facts and corrections are retained indefinitely. Up to 24 redacted OCR excerpts (maximum 900 characters each) and up to 12 bounded vision descriptions are stored per processing window. Screenshot paths and JustNow frame/span IDs are references; **no screenshots are copied**. References expire under JustNow's own retention, so future reprocessing may lose access to original pixels. Vision descriptions are `INFERRED`; copied OCR is `OBSERVED`. Facts inferred from either retain their evidence IDs, confidence, activity and project associations.
 
 Text secret redaction runs before prompts and again at persistence. This is defense in depth: unrelated private text can still be captured, and redaction does not remove secrets from screenshot pixels sent to the local model. Configure JustNow exclusions or use `--no-images` for sensitive screens. The owned SQLite file and upgrade backups are mode 0600. No raw OCR dumps are archived. `--diagnostics <directory>` explicitly enables bounded, redacted failed model response files locally; leave it unset for normal use.
 
@@ -201,3 +201,37 @@ Generated builds, local Xcode state, private verification files, local databases
 ## License
 
 [MIT](LICENSE), copyright 2026 Labhesh Dudi. This license covers WorklogAgent; separately installed applications and model weights retain their own licenses.
+
+## Dynamic visual evidence selection
+
+Policy v2 reuses `ActivityPreprocessor` and `OCRDeduplicator` to select useful content states before any model call. Visual selection tolerates unsupported icon glyphs before applying the same quality checks; canonical OCR remains strict. Partial OCR receives a -0.12 score penalty. Standalone numbers are excluded from OCR similarity (clock/counter changes); full error/result lines remain part of the state signature. Clean OCR clusters at Jaccard similarity >= 0.90; partial OCR clusters at >= 0.65. An eight-byte hash distance <= 6 also collapses states when OCR similarity >= 0.70 or OCR is partial, provided project/domain and outcome signatures agree. Explicit HTTP(S)/www hosts and bare hosts with common web suffixes provide domain context; source extensions are excluded. An explicit `<app> File Edit` menu sequence supplies an application fingerprint even when persistent menu chrome is removed. Cross-display duplicates resolve by highest importance before diversity bonuses, followed by a final duplicate check. Repeated static screens can yield one image; absent useful evidence can yield none. A single hash-backed image is allowed as a fallback when no useful OCR exists. No image files are copied.
+
+For C distinct eligible clusters and O possible outcome/error clusters, the recommended budget is:
+
+```
+C == 0: 0
+otherwise: ceil(2 * sqrt(C)) + min(2, O) + D
+D = 1 only when C >= 4 and interval duration >= 3 hours; otherwise 0
+```
+
+The budget is clamped to the configured preferred minimum and maximum, with an absolute ceiling of 12. Defaults: dynamic enabled, preferred minimum 1, maximum 12. Minimum never pads the set with duplicates or low-value frames. Selection can return fewer images than its budget. Disabling dynamic budgeting uses the configured maximum while preserving content filtering and deduplication.
+
+Candidates receive deterministic weights: useful content 0.25; vocabulary quality up to 0.15; activity start/transition 0.15; interval beginning or first useful display state 0.10; final state or final useful display state 0.08 (each endpoint boost applies once); long evidence gap 0.05; possible error/failure 0.45, result/success 0.50, or warning 0.25 (only one outcome boost applies); playback chrome -0.20. Greedy selection adds 0.12 for an unrepresented display and 0.10 for an unrepresented configured-project/domain context. There are no display quotas. Applications are distinguished through OCR state changes and explicit menu fingerprints because JustNow supplies no foreground application/window metadata here. Outcome terms prioritize evidence; they do not establish that a real outcome occurred.
+
+```sh
+swift run WorklogAgent inspect --minutes 90
+swift run WorklogAgent inspect --from 2026-09-28T14:30:00Z --to 2026-09-28T16:00:00Z
+swift run WorklogAgent inspect --minutes 90 --min-images 1 --max-images 8
+swift run WorklogAgent summarize --minutes 90 --max-images 8
+swift run WorklogAgent inspect --minutes 90 --no-images
+swift test
+swift build -c release
+```
+
+Menu-bar Settings exposes vision, dynamic selection, preferred minimum, and maximum. Missing preference keys adopt the new defaults without changing the existing vision toggle. CLI flags are independent of menu-bar preferences. `inspect` prints only counts, timestamps, displays, scores, and fixed selection reasons; it does not print OCR, image paths, or project/domain content.
+
+Owned SQLite schema v4 adds `processing_windows.visual_selection`: policy version, candidate/eligible/cluster/selected counts, recommended budget, reasons, timestamps, display, JustNow frame/file references, scores and cluster IDs. It also records source-file payload estimates, actual encoded base64 bytes, requested/recognized image counts, vision availability, and vision-stage elapsed time. Estimates exclude JSON overhead and can differ from resized JPEG sizes. Images remain 1920-pixel JPEG thumbnails, sent one at a time; reconstruction has the existing bounded text context. Selected evidence can differ from successfully recognized evidence if a file cannot decode or a vision response is invalid.
+
+Exact replays skip inference; explicit reprocessing uses the current policy and atomically replaces both generated records and selection metadata. The existing refusal to reprocess user-corrected windows remains in place, preserving corrections. Schema upgrades retain the existing permission-restricted backup strategy. Old windows without selection metadata remain readable.
+
+Limitations: OCR quality controls most candidate eligibility; noisy or missing OCR can suppress meaningful visual changes. Perceptual hashes cannot explain a change. Playback heuristics and outcome words can misclassify incidental text; image/model evidence remains inferred. Greedy scores are heuristics, not probabilities. This is a single-pass selector without adaptive second inference.

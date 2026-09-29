@@ -4,12 +4,18 @@ import Foundation
 public struct ActivityPreprocessor {
     public init() {}
 
-    public func clean(_ observations: [OCRObservation]) -> [OCRObservation] {
+    public func clean(_ observations: [OCRObservation], tolerateArtifacts: Bool = false) -> [OCRObservation] {
         let normalized = observations.sorted { $0.startedAt < $1.startedAt }.map { observation in
             let text = SecretRedactor().redact(observation.text).precomposedStringWithCompatibilityMapping
             var seen = Set<String>()
             let lines = text.split(whereSeparator: \.isNewline).compactMap { raw -> String? in
-                let line = raw.replacingOccurrences(of: "\u{0000}", with: "")
+                // Vision needs partial context even when OCR contains unsupported icon glyphs.
+                // Canonical text preprocessing remains strict; both paths use the same quality rules.
+                let allowed = CharacterSet.alphanumerics.union(.whitespaces).union(CharacterSet(charactersIn: " .,:;!?/_-+={}[]()<>@#%&*|\\\"'`~$"))
+                let source = tolerateArtifacts ? String(String.UnicodeScalarView(raw.unicodeScalars.map {
+                    allowed.contains($0) ? $0 : UnicodeScalar(32)
+                })) : String(raw)
+                let line = source.replacingOccurrences(of: "\u{0000}", with: "")
                     .split(whereSeparator: \.isWhitespace).joined(separator: " ")
                 guard isUseful(line), seen.insert(line.lowercased()).inserted else { return nil }
                 return line

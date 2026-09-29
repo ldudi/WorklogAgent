@@ -19,6 +19,8 @@ struct WorklogAgentCLI {
             if let ollama = parsed.value("ollama"), let url = URL(string: ollama) { config.ollamaBaseURL = url }
             if parsed.flag("no-daily-summary") { config.autoDailySummary = false }
             if parsed.flag("no-images") { config.useScreenshots = false }
+            config.screenshotSelection = ScreenshotSelectionSettings(dynamic: !parsed.flag("no-dynamic-images"),
+                minimum: parsed.intValue("min-images") ?? 1, maximum: parsed.intValue("max-images") ?? 12)
             if let path = parsed.value("diagnostics") { config.diagnosticsDirectory = expandPath(path) }
             if let path = parsed.value("database") { config.databaseURL = expandPath(path) }
             if let threshold = parsed.intValue("focus-minutes") { config.focusThresholdMinutes = max(1, threshold) }
@@ -40,7 +42,12 @@ struct WorklogAgentCLI {
                 if models.isEmpty { print("No Ollama models installed.") }
                 for model in models { print(model.name) }
             case "inspect":
-                print(try await engine.inspect(minutes: config.summaryLookbackMinutes))
+                if let from = parsed.value("from"), let to = parsed.value("to") {
+                    print(try await engine.inspect(start: parseDate(from), end: parseDate(to)))
+                } else {
+                    guard parsed.value("from") == nil && parsed.value("to") == nil else { throw CLIError("Inspection requires both --from and --to") }
+                    print(try await engine.inspect(minutes: config.summaryLookbackMinutes))
+                }
             case "summarize":
                 if let from = parsed.value("from"), let to = parsed.value("to") {
                     printResult(try await engine.summarizeInterval(start: parseDate(from), end: parseDate(to), inspectionOnly: parsed.flag("inspect-only"), reprocess: parsed.flag("reprocess")))
@@ -149,6 +156,7 @@ struct WorklogAgentCLI {
     }
 
     static func printResult(_ result: SummaryResult) {
+        if let selection = result.visualSelection { print(selection.diagnostics) }
         if let url = result.outputURL {
             print("Summarized \(result.rawObservationCount) OCR observations (\(result.retainedObservationCount) cleaned states), with \(result.screenshotCount) representative screenshots.")
             print("Updated \(url.path)")
@@ -210,6 +218,9 @@ struct WorklogAgentCLI {
           --limit <int>            Search limit, default 100 (maximum 10,000)
           --justnow <path>         Read-only JustNow directory
           --ollama <url>           Local loopback Ollama, default http://127.0.0.1:11434
+          --min-images N          Preferred minimum distinct images (default 1; no padding)
+          --max-images N          Image cap (default 12, safety maximum 12)
+          --no-dynamic-images     Use configured maximum, still reject duplicates
           --inspect-only          Explicit --from/--to inspection without persistence
           --reprocess             Replace the exact unconfirmed interval; refuses user corrections
           --diagnostics <path>    Opt-in local redacted failed-response diagnostics
@@ -246,12 +257,12 @@ private struct Arguments {
             let token = tokens[index]
             guard token.hasPrefix("--") else { positionals.append(token); index += 1; continue }
             let key = String(token.dropFirst(2))
-            if ["no-daily-summary", "no-images", "inspect-only", "reprocess"].contains(key) {
+            if ["no-daily-summary", "no-images", "no-dynamic-images", "inspect-only", "reprocess"].contains(key) {
                 flags.insert(key)
                 index += 1
                 continue
             }
-            guard ["model", "interval", "minutes", "output", "justnow", "ollama", "database", "projects-config", "focus-minutes", "from", "to", "date", "project", "category", "intent", "entity", "fact", "limit", "title", "diagnostics"].contains(key) else { throw CLIError("Unknown option --\(key)") }
+            guard ["model", "interval", "minutes", "min-images", "max-images", "output", "justnow", "ollama", "database", "projects-config", "focus-minutes", "from", "to", "date", "project", "category", "intent", "entity", "fact", "limit", "title", "diagnostics"].contains(key) else { throw CLIError("Unknown option --\(key)") }
             guard index + 1 < tokens.count, !tokens[index + 1].hasPrefix("--") else { throw CLIError("Missing value for --\(key)") }
             options[key] = tokens[index + 1]
             index += 2

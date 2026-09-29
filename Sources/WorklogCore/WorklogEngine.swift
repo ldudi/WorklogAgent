@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 public actor WorklogEngine {
     public var configuration: WorklogConfiguration
@@ -34,7 +35,7 @@ public actor WorklogEngine {
                 lines.append("✓ Model installed: \(configuration.model)")
                 if configuration.useScreenshots {
                     let vision = try await client().supportsVision(model: configuration.model)
-                    lines.append(vision ? "✓ Vision supported; up to 6 representative images per summary" : "✓ Text-only fallback; selected model has no vision capability")
+                    lines.append(vision ? "✓ Vision supported; dynamic evidence selection; hard cap \(configuration.screenshotSelection.normalized.maximum) images per summary" : "✓ Text-only fallback; selected model has no vision capability")
                 }
             } else {
                 lines.append("✗ Model not found: \(configuration.model)")
@@ -109,13 +110,19 @@ public actor WorklogEngine {
 
     public func inspect(minutes: Int = 90, now: Date = Date()) throws -> String {
         let end = now.addingTimeInterval(-TimeInterval(max(0, configuration.graceSeconds)))
-        let start = end.addingTimeInterval(-TimeInterval(max(1, minutes) * 60))
+        return try inspect(start: end.addingTimeInterval(-TimeInterval(max(1, minutes) * 60)), end: end)
+    }
+
+    public func inspect(start: Date, end: Date) throws -> String {
         let reader = JustNowReader(directory: configuration.justNowDirectory)
         let raw = try reader.observations(from: start, to: end)
         let cleaned = ActivityPreprocessor().clean(raw)
         let states = OCRDeduplicator().deduplicate(cleaned)
         let context = ContextBuilder(maxCharacters: configuration.maxContextCharacters).build(from: states)
-        let screenshots = configuration.useScreenshots ? try reader.representativeScreenshots(from: start, to: end) : []
+        let selection = VisualEvidenceSampler().select(images: configuration.useScreenshots ? try reader.screenshotCandidates(from: start, to: end) : [],
+            observations: raw, start: start, end: end, settings: configuration.screenshotSelection,
+            visionEnabled: configuration.useScreenshots, projects: configuration.projectConfiguration)
+        let screenshots = selection.selected.map(\.image)
         return """
         Interval: \(WorklogWriter.time(start))–\(WorklogWriter.time(end))
         Raw observations: \(raw.count)
@@ -123,11 +130,7 @@ public actor WorklogEngine {
         Screen states: \(states.count)
         Displays: \(Set(states.compactMap(\.displayName) + screenshots.map(\.displayName)).count)
         Evidence characters: \(context.count) / \(configuration.maxContextCharacters)
-        Representative screenshots available: \(screenshots.count)
-        \(screenshots.map { "\(WorklogWriter.time($0.startedAt)) | \($0.displayName) | \($0.url.path)" }.joined(separator: "\n"))
-
-        Cleaned representative evidence:
-        \(context)
+        \(selection.metadata.diagnostics)
         """
     }
 
@@ -170,15 +173,24 @@ public actor WorklogEngine {
         } else if projects.projects.isEmpty {
             projects = ProjectConfiguration(projects: try await store.registeredProjects())
         }
-        var screenshots: [ScreenshotEvidence] = []
-        if configuration.useScreenshots {
-            let available = try reader.representativeScreenshots(from: start, to: end)
-            if !available.isEmpty, try await client.supportsVision(model: configuration.model) { screenshots = available }
+        let images = configuration.useScreenshots ? try reader.screenshotCandidates(from: start, to: end) : []
+        var selection = VisualEvidenceSampler().select(images: images, observations: raw, start: start, end: end,
+            settings: configuration.screenshotSelection, visionEnabled: configuration.useScreenshots, projects: projects)
+        if !selection.selected.isEmpty, try await !client.supportsVision(model: configuration.model) {
+            selection.selected = []
+            selection.metadata.selected = []
+            selection.metadata.visionEnabled = false
+            selection.metadata.estimatedImagePayloadBytes = 0
+            selection.metadata.selectionReason = "model has no vision capability"
         }
+        let screenshots = selection.selected.map(\.image)
+        let visionStart = Date()
         var imageCount = 0
         for (index, screenshot) in screenshots.enumerated() {
             try Task.checkCancellation()
             guard let encoded = screenshot.encodedImage() else { continue }
+            selection.metadata.encodedImagePayloadBytes += encoded.utf8.count
+            selection.metadata.requestedImageCount += 1
             do {
                 let facts = try await client.describeScreenshot(model: configuration.model, image: encoded)
                 evidence.append(ActivityEvidence(id: stableID("\(window):image:\(index)"), timestamp: screenshot.startedAt,
@@ -190,6 +202,10 @@ public actor WorklogEngine {
                 continue
             }
         }
+        selection.metadata.recognizedImageCount = imageCount
+        selection.metadata.visionInferenceSeconds = screenshots.isEmpty ? 0 : Date().timeIntervalSince(visionStart)
+        let metrics = selection.metadata
+        Logger(subsystem: "WorklogAgent", category: "VisionSelection").info("policy=\(metrics.policyVersion) candidates=\(metrics.candidateScreenshotCount) clusters=\(metrics.distinctClusterCount) budget=\(metrics.dynamicBudget) selected=\(metrics.selectedScreenshotCount) requested=\(metrics.requestedImageCount) payloadBytes=\(metrics.encodedImagePayloadBytes) vision=\(metrics.visionEnabled)")
         let records: [ActivityRecord]
         if evidence.isEmpty { records = [] }
         else {
@@ -197,12 +213,15 @@ public actor WorklogEngine {
                 projects: projects, maxContextCharacters: configuration.maxContextCharacters, diagnosticsDirectory: configuration.diagnosticsDirectory)
         }
         if inspectionOnly {
-            let markdown = records.map { "\(WorklogWriter.time($0.start))–\(WorklogWriter.time($0.end)): \($0.title) · \($0.category.rawValue) / \($0.intent.rawValue)" }.joined(separator: "\n")
+            let markdown = records.map { item in
+                let facts = item.facts.map { "  \($0.kind.rawValue): \($0.text)" }.joined(separator: "\n")
+                return SecretRedactor().redact("\(WorklogWriter.time(item.start))–\(WorklogWriter.time(item.end)): \(item.title) · \(item.category.rawValue) / \(item.intent.rawValue)\n  \(item.summary)" + (facts.isEmpty ? "" : "\n" + facts))
+            }.joined(separator: "\n")
             return SummaryResult(start: start, end: end, rawObservationCount: raw.count, retainedObservationCount: deduped.count,
-                screenshotCount: imageCount, markdown: markdown, outputURL: nil)
+                screenshotCount: imageCount, visualSelection: selection.metadata, markdown: markdown, outputURL: nil)
         }
         try Task.checkCancellation()
-        try await store.persist(start: start, end: end, records: records, evidence: evidence, projects: projects, reprocess: reprocess)
+        try await store.persist(start: start, end: end, records: records, evidence: evidence, projects: projects, reprocess: reprocess, visualSelection: selection.metadata)
         let url = try await report.write(store: store, period: .today, date: start)
         // Explicit intervals can cross midnight; refresh each affected day too.
         var day = Calendar.current.startOfDay(for: start)
@@ -210,7 +229,7 @@ public actor WorklogEngine {
             _ = try await report.write(store: store, period: .today, date: next); day = next
         }
         return SummaryResult(start: start, end: end, rawObservationCount: raw.count, retainedObservationCount: deduped.count,
-            screenshotCount: imageCount, markdown: try await report.render(store: store, period: .today, date: start), outputURL: url)
+            screenshotCount: imageCount, visualSelection: selection.metadata, markdown: try await report.render(store: store, period: .today, date: start), outputURL: url)
     }
 
     public func summarizeDay(_ date: Date = Date(), markAutomatic: Bool = false) async throws -> URL? {

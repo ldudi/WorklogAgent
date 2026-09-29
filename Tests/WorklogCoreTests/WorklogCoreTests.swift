@@ -17,7 +17,7 @@ final class WorklogCoreTests: XCTestCase {
         sqlite3_close(db)
         let before = try Data(contentsOf: databaseURL)
         let reader = JustNowReader(directory: root)
-        let rows = try reader.representativeScreenshots(from: Date(timeIntervalSince1970: 1000), to: Date(timeIntervalSince1970: 2000))
+        let rows = try reader.screenshotCandidates(from: Date(timeIntervalSince1970: 1000), to: Date(timeIntervalSince1970: 2000))
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows.first?.url, frames.appendingPathComponent("screen.jpg"))
         XCTAssertEqual(try Data(contentsOf: databaseURL), before)
@@ -25,7 +25,7 @@ final class WorklogCoreTests: XCTestCase {
         XCTAssertEqual(sqlite3_open(databaseURL.path, &db), SQLITE_OK)
         XCTAssertEqual(sqlite3_exec(db, "UPDATE frames SET filename='../outside.jpg';", nil, nil, nil), SQLITE_OK)
         sqlite3_close(db)
-        XCTAssertEqual(try reader.representativeScreenshots(from: Date(timeIntervalSince1970: 1000), to: Date(timeIntervalSince1970: 2000)).count, 0)
+        XCTAssertEqual(try reader.screenshotCandidates(from: Date(timeIntervalSince1970: 1000), to: Date(timeIntervalSince1970: 2000)).count, 0)
     }
 
     func testManualLookbackIsInspectionAndAutomaticUsesOwnedCheckpoint() async throws {

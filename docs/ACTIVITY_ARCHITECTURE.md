@@ -87,3 +87,8 @@ Existing JustNow reader, OCR preprocessor/deduplicator, screenshot selection, St
 ## Deferred roadmap
 
 Git evidence collection; goals and goal progress; semantic problem matching/lifecycle linking; milestones; annual monthly trend retrieval; natural-language query planning/`ask`; JSON/CSV export commands; semantic embeddings; AI weekly improvement interpretation; selected screenshot-copy retention; richer search/settings/correction UI; advanced field-level correction merging. Basic outcomes/problems/decisions, monthly deterministic projections, legacy import and minimal menu-bar statistics are implemented, but do not constitute the whole roadmap.
+
+
+### Visual selection metadata (schema v4, policy v2)
+
+`JustNowReader.screenshotCandidates` loads path-validated references from read-only frame metadata. `VisualEvidenceSampler` matches them to cleaned OCR, reuses OCR state/similarity rules, scores cluster representatives, computes a sublinear complexity budget, then performs greedy diversity selection and a cross-display duplicate check. It owns no model or persistence calls. The engine handles model capability, serial image recognition and transport metrics. `ActivityStore.persist(... visualSelection:)` writes metadata with the processing window inside its existing transaction. Replay and correction protections apply to selection metadata exactly as they do to generated activities. Existing windows carry null metadata until deliberately reprocessed. See README for thresholds, weights, settings and diagnostics.

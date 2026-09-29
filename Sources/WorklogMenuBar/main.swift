@@ -112,6 +112,9 @@ final class MenuBarModel: ObservableObject {
     @Published var selectedModel: String
     @Published var intervalMinutes: Int
     @Published var summaryLookbackMinutes: Int
+    @Published var dynamicScreenshots: Bool
+    @Published var minimumScreenshots: Int
+    @Published var maximumScreenshots: Int
     @Published var useScreenshots: Bool
     @Published var outputPath: String
     @Published var autoDailySummary: Bool
@@ -146,6 +149,10 @@ final class MenuBarModel: ObservableObject {
         selectedModel = model
         intervalMinutes = max(1, interval)
         summaryLookbackMinutes = max(1, lookback)
+        let selection = ScreenshotSelectionSettings(defaults: defaults)
+        dynamicScreenshots = selection.dynamic
+        minimumScreenshots = selection.minimum
+        maximumScreenshots = selection.maximum
         useScreenshots = screenshots
         outputPath = output
         autoDailySummary = daily
@@ -155,6 +162,7 @@ final class MenuBarModel: ObservableObject {
         config.intervalMinutes = max(1, interval)
         config.summaryLookbackMinutes = max(1, lookback)
         config.useScreenshots = screenshots
+        config.screenshotSelection = selection
         config.outputDirectory = URL(fileURLWithPath: output)
         config.autoDailySummary = daily
         engine = WorklogEngine(configuration: config)
@@ -402,6 +410,8 @@ final class MenuBarModel: ObservableObject {
         config.intervalMinutes = max(1, intervalMinutes)
         config.summaryLookbackMinutes = max(1, summaryLookbackMinutes)
         config.useScreenshots = useScreenshots
+        config.screenshotSelection = ScreenshotSelectionSettings(dynamic: dynamicScreenshots, minimum: minimumScreenshots, maximum: maximumScreenshots)
+        config.screenshotSelection.save(to: defaults)
         config.outputDirectory = URL(fileURLWithPath: expandTilde(outputPath))
         config.autoDailySummary = autoDailySummary
         return Task { await engine.updateConfiguration(config) }
@@ -432,6 +442,12 @@ struct SettingsView: View {
 
             Stepper("Summary every \(model.intervalMinutes) minutes", value: $model.intervalMinutes, in: 5...120, step: 5)
             Toggle("Use representative screenshots with vision models", isOn: $model.useScreenshots)
+            Toggle("Dynamic screenshot selection", isOn: $model.dynamicScreenshots)
+                .disabled(!model.useScreenshots)
+            Stepper("Preferred minimum: \(model.minimumScreenshots)", value: $model.minimumScreenshots, in: 0...model.maximumScreenshots)
+            Stepper("Maximum screenshots: \(model.maximumScreenshots)", value: $model.maximumScreenshots, in: max(1, model.minimumScreenshots)...12)
+            Text("Static or low-signal intervals may use fewer than the preferred minimum.")
+                .font(.caption).foregroundStyle(.secondary)
 
             TextField("Output folder", text: $model.outputPath)
                 .textFieldStyle(.roundedBorder)

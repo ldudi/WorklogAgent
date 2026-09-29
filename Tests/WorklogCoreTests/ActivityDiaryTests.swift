@@ -9,12 +9,10 @@ final class ActivityDiaryTests: XCTestCase {
              ScreenshotEvidence(id: "changing-\(index)", startedAt: Date(timeIntervalSince1970: Double(index)),
                 displayName: "Built-in", url: URL(fileURLWithPath: "/tmp/changing.jpg"), perceptualHash: Data(repeating: index.isMultiple(of: 2) ? 0xff : 0, count: 8))]
         }
-        let result = ScreenshotSelector().select(rows, limit: 6)
-        XCTAssertEqual(result.count, 6)
-        XCTAssertEqual(result.filter { $0.displayName == "External" }.count, 1)
-        XCTAssertTrue(result.contains { $0.id == "changing-19" })
-        XCTAssertEqual(result.map(\.startedAt), result.map(\.startedAt).sorted())
-        XCTAssertEqual(ScreenshotSelector().select(rows, limit: 0).count, 0)
+        let result = VisualEvidenceSampler().select(images: rows, observations: [],
+            start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 20))
+        XCTAssertEqual(result.selected.count, 1) // No OCR: bounded visual fallback.
+        XCTAssertEqual(result.metadata.distinctClusterCount, 1)
     }
 
     func testContinuityUsesAcceptedDiaryAndExcludesDailySummary() throws {

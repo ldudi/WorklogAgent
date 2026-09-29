@@ -32,38 +32,8 @@ public struct ScreenshotEvidence: Sendable {
     }
 }
 
-struct ScreenshotSelector {
-    func select(_ candidates: [ScreenshotEvidence], limit: Int = 6) -> [ScreenshotEvidence] {
-        guard limit > 0 else { return [] }
-        var previousByDisplay: [String: Data] = [:]
-        var unique: [ScreenshotEvidence] = []
-        for candidate in candidates.sorted(by: { $0.startedAt < $1.startedAt }) {
-            if let previous = previousByDisplay[candidate.displayName],
-               previous.count == 8, candidate.perceptualHash.count == 8,
-               zip(previous, candidate.perceptualHash).reduce(0, { $0 + ($1.0 ^ $1.1).nonzeroBitCount }) <= 6 {
-                continue
-            }
-            unique.append(candidate)
-            previousByDisplay[candidate.displayName] = candidate.perceptualHash
-        }
-        let groups = Dictionary(grouping: unique, by: \.displayName)
-        let displays = Array(groups.keys.sorted().prefix(limit))
-        var allocations = Dictionary(uniqueKeysWithValues: displays.map { ($0, 1) })
-        while allocations.values.reduce(0, +) < min(limit, unique.count) {
-            let eligible = displays.filter { (allocations[$0] ?? 0) < (groups[$0]?.count ?? 0) }
-            guard let key = eligible.max(by: {
-                Double(groups[$0]?.count ?? 0) / Double((allocations[$0] ?? 0) + 1) <
-                Double(groups[$1]?.count ?? 0) / Double((allocations[$1] ?? 0) + 1)
-            }) else { break }
-            allocations[key, default: 0] += 1
-        }
-        return displays.flatMap { evenlySpaced(groups[$0] ?? [], limit: allocations[$0] ?? 0) }
-            .sorted { $0.startedAt < $1.startedAt }
-    }
-}
-
 extension JustNowReader {
-    public func representativeScreenshots(from start: Date, to end: Date, limit: Int = 6) throws -> [ScreenshotEvidence] {
+    public func screenshotCandidates(from start: Date, to end: Date) throws -> [ScreenshotEvidence] {
         let db = try SQLiteReadConnection(url: framesDatabaseURL)
         let statement = try db.prepare("""
         SELECT f.id, s.started_at, f.filename, f.perceptual_hash, s.display_name
@@ -84,7 +54,7 @@ extension JustNowReader {
             if rc == SQLITE_DONE { break }
             guard rc == SQLITE_ROW else { throw WorklogError.sqlite(db.errorMessage()) }
             guard let id = sqliteText(statement, 0), let filename = sqliteText(statement, 2),
-                  seen.insert(id).inserted else { continue }
+                  seen.insert("\(id):\(sqliteText(statement, 4) ?? "Unknown display")").inserted else { continue }
             let url = root.appendingPathComponent(filename).resolvingSymlinksInPath()
             guard url.path.hasPrefix(root.path + "/"), FileManager.default.fileExists(atPath: url.path) else { continue }
             let bytes = sqlite3_column_bytes(statement, 3)
@@ -93,6 +63,15 @@ extension JustNowReader {
                 startedAt: max(start, Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))),
                 displayName: sqliteText(statement, 4) ?? "Unknown display", url: url, perceptualHash: hash))
         }
-        return ScreenshotSelector().select(candidates, limit: min(6, max(0, limit)))
+        return candidates
+    }
+}
+
+// Compatibility for callers that only need image references. The engine supplies OCR explicitly.
+extension JustNowReader {
+    public func representativeScreenshots(from start: Date, to end: Date, limit: Int = 12) throws -> [ScreenshotEvidence] {
+        let raw = try observations(from: start, to: end)
+        return VisualEvidenceSampler().select(images: try screenshotCandidates(from: start, to: end), observations: raw,
+            start: start, end: end, settings: ScreenshotSelectionSettings(maximum: limit)).selected.map(\.image)
     }
 }

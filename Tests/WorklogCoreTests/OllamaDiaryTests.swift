@@ -100,6 +100,58 @@ final class OllamaDiaryTests: XCTestCase {
             guard case WorklogError.invalidSummaryResponse = error else { return XCTFail("Unexpected error: \(error)") }
         }
     }
+    func testEngineVisionRequestsRespectDynamicSelectionAndPersistMetrics() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let frames = root.appendingPathComponent("frames")
+        try FileManager.default.createDirectory(at: frames, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Valid PNG fixture; encoding is exercised through ImageIO, without Ollama.
+        let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII="))
+        var pointer: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(root.appendingPathComponent("frames.sqlite").path, &pointer), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(pointer, "CREATE TABLE frame_spans(sequence INTEGER PRIMARY KEY,id TEXT,frame_id TEXT,started_at REAL,observed_through_at REAL,observation_count INT,display_name TEXT); CREATE TABLE frames(id TEXT,filename TEXT,perceptual_hash BLOB);", nil, nil, nil), SQLITE_OK)
+        let texts = ["Editor implementing orchard apple sorting algorithm", "Terminal compiling banana parser library process", "Terminal all tests passed build succeeded", "Terminal all tests passed build succeeded"]
+        for index in texts.indices {
+            try png.write(to: frames.appendingPathComponent("f\(index).png"))
+            XCTAssertEqual(sqlite3_exec(pointer, "INSERT INTO frames VALUES('f\(index)','f\(index).png',NULL); INSERT INTO frame_spans VALUES(\(index),'s\(index)','f\(index)',\(1000 + index * 60),\(1059 + index * 60),1,'External');", nil, nil, nil), SQLITE_OK)
+        }
+        sqlite3_close(pointer)
+        XCTAssertEqual(sqlite3_open(root.appendingPathComponent("text_cache.sqlite").path, &pointer), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(pointer, "CREATE TABLE frame_text(frame_id TEXT,text TEXT);", nil, nil, nil), SQLITE_OK)
+        for index in texts.indices {
+            XCTAssertEqual(sqlite3_exec(pointer, "INSERT INTO frame_text VALUES('f\(index)','\(texts[index])');", nil, nil, nil), SQLITE_OK)
+        }
+        sqlite3_close(pointer)
+        var config = WorklogConfiguration(outputDirectory: root.appendingPathComponent("reports"), justNowDirectory: root)
+        config.databaseURL = root.appendingPathComponent("owned.sqlite")
+        config.screenshotSelection = .init(maximum: 3)
+        let engine = WorklogEngine(configuration: config, ollamaClient: client())
+        let start = Date(timeIntervalSince1970: 1000), end = Date(timeIntervalSince1970: 2800)
+        let before = DiaryStubProtocol.store.requests().count
+        let result = try await engine.summarizeInterval(start: start, end: end)
+        let requests = Array(DiaryStubProtocol.store.requests().dropFirst(before))
+        let vision = requests.filter { $0.prompt.contains("EXTRACT SCREEN FACTS") }
+        XCTAssertEqual(result.visualSelection?.selectedScreenshotCount, 3)
+        XCTAssertEqual(result.screenshotCount, 3)
+        XCTAssertEqual(vision.count, 3)
+        XCTAssertTrue(vision.allSatisfy { $0.images.count == 1 })
+        XCTAssertTrue(requests.filter { $0.prompt.contains("PRIMARY activity timeline") }.allSatisfy { $0.images.isEmpty })
+        XCTAssertGreaterThan(result.visualSelection?.encodedImagePayloadBytes ?? 0, 0)
+        XCTAssertEqual(result.visualSelection?.requestedImageCount, 3)
+        let store = try ActivityStore(url: config.databaseURL)
+        let stored = try await store.visualSelection(start: start, end: end)
+        XCTAssertEqual(stored, result.visualSelection)
+        let diagnostic = try await engine.inspect(start: start, end: end)
+        XCTAssertTrue(diagnostic.contains("Selected screenshots: 3"))
+        XCTAssertFalse(diagnostic.contains("orchard"))
+        let checkpoint = try await store.checkpoint()
+        _ = try await engine.summarizeInterval(start: start, end: end, inspectionOnly: true)
+        let afterInspection = try await store.checkpoint()
+        XCTAssertEqual(afterInspection, checkpoint)
+        let metadataAfterInspection = try await store.visualSelection(start: start, end: end)
+        XCTAssertEqual(metadataAfterInspection, stored)
+    }
+
 }
 
 private struct RecordedRequest {

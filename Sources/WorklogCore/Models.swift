@@ -34,6 +34,7 @@ public struct SummaryResult: Sendable {
     public let rawObservationCount: Int
     public let retainedObservationCount: Int
     public let screenshotCount: Int
+    public let visualSelection: VisualSelectionMetadata?
     public let markdown: String?
     public let outputURL: URL?
 
@@ -43,6 +44,7 @@ public struct SummaryResult: Sendable {
         rawObservationCount: Int,
         retainedObservationCount: Int,
         screenshotCount: Int = 0,
+        visualSelection: VisualSelectionMetadata? = nil,
         markdown: String?,
         outputURL: URL?
     ) {
@@ -51,6 +53,7 @@ public struct SummaryResult: Sendable {
         self.rawObservationCount = rawObservationCount
         self.retainedObservationCount = retainedObservationCount
         self.screenshotCount = screenshotCount
+        self.visualSelection = visualSelection
         self.markdown = markdown
         self.outputURL = outputURL
     }
@@ -60,6 +63,7 @@ public struct WorklogConfiguration: Sendable {
     public var model: String
     public var intervalMinutes: Int
     public var summaryLookbackMinutes: Int
+    public var screenshotSelection = ScreenshotSelectionSettings()
     public var useScreenshots: Bool
     public var graceSeconds: Int
     public var outputDirectory: URL

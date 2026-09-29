@@ -34,7 +34,7 @@ final class ActivityFoundationTests: XCTestCase {
         try ActivityReconstruction().decode(json, start: start, end: start.addingTimeInterval(1800), evidence: [evidence()], projects: projects)
     }
     func testSchemaCreationAndReopening() async throws {
-        let first = try store(); let version = try await first.version(); XCTAssertEqual(version, 3)
+        let first = try store(); let version = try await first.version(); XCTAssertEqual(version, 4)
         try await save(record(), store: first)
         let reopened = try store(); let rows = try await reopened.search(ActivitySearch(from: start, to: start.addingTimeInterval(3600)))
         XCTAssertEqual(rows.count, 1); XCTAssertEqual(rows.first?.duration, 1800)
@@ -43,9 +43,9 @@ final class ActivityFoundationTests: XCTestCase {
         let first = try store(); try await save(record(), store: first)
         var pointer: OpaquePointer?
         XCTAssertEqual(sqlite3_open(root.appendingPathComponent("activity.sqlite").path, &pointer), SQLITE_OK)
-        XCTAssertEqual(sqlite3_exec(pointer, "DROP TABLE corrections; DROP TABLE activity_fts; ALTER TABLE evidence DROP COLUMN source_reference; ALTER TABLE evidence DROP COLUMN provenance; PRAGMA user_version=1;", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(pointer, "ALTER TABLE processing_windows DROP COLUMN visual_selection; DROP TABLE corrections; DROP TABLE activity_fts; ALTER TABLE evidence DROP COLUMN source_reference; ALTER TABLE evidence DROP COLUMN provenance; PRAGMA user_version=1;", nil, nil, nil), SQLITE_OK)
         sqlite3_close(pointer)
-        let migrated = try store(); let version = try await migrated.version(); XCTAssertEqual(version, 3)
+        let migrated = try store(); let version = try await migrated.version(); XCTAssertEqual(version, 4)
         let found = try await migrated.search(ActivitySearch(from: start, to: start.addingTimeInterval(3600), text: "feature"))
         XCTAssertEqual(found.count, 1)
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasSuffix(".backup") })

@@ -92,7 +92,7 @@ public struct ActivityCorrection: Codable, Sendable {
 
 /// The actor owns its SQLite connection. BEGIN IMMEDIATE plus database triggers also protects concurrent CLI/app processes.
 public actor ActivityStore {
-    public static let schemaVersion = 3
+    public static let schemaVersion = 4
     public static var defaultURL: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/WorklogAgent/worklog.sqlite") }
     public let url: URL
     private let db: OwnedDatabase
@@ -119,11 +119,16 @@ public actor ActivityStore {
             if current < 1 { try database.script(Self.migration1) }
             if current < 2 { try database.script(Self.migration2) }
             if current < 3 { try database.script(Self.migration3) }
+            if current < 4 { try database.script(Self.migration4) }
         }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         db = database
     }
     public func version() throws -> Int { Int(try db.rows("PRAGMA user_version").first?.first.flatMap { $0 } ?? "0") ?? 0 }
+    public func visualSelection(start: Date, end: Date) throws -> VisualSelectionMetadata? {
+        guard let value = try db.rows("SELECT visual_selection FROM processing_windows WHERE id=?", [.text(intervalID(start, end))]).first?.first.flatMap({ $0 }) else { return nil }
+        return try JSONDecoder().decode(VisualSelectionMetadata.self, from: Data(value.utf8))
+    }
     public func checkpoint() throws -> Date? {
         guard let value = try db.rows("SELECT value FROM metadata WHERE key='lastProcessedTimestamp'").first?.first.flatMap({ $0 }), let time = Double(value) else { return nil }
         return Date(timeIntervalSince1970: time)
@@ -153,7 +158,7 @@ public actor ActivityStore {
     }
     @discardableResult
     public func persist(start: Date, end: Date, records: [ActivityRecord], evidence: [ActivityEvidence],
-                        projects: ProjectConfiguration = ProjectConfiguration(), advanceCheckpoint: Bool = true, reprocess: Bool = false) throws -> Bool {
+                        projects: ProjectConfiguration = ProjectConfiguration(), advanceCheckpoint: Bool = true, reprocess: Bool = false, visualSelection: VisualSelectionMetadata? = nil) throws -> Bool {
         let window = intervalID(start, end)
         return try db.transaction {
             if try containsWindow(start: start, end: end) {
@@ -179,6 +184,9 @@ public actor ActivityStore {
                 cursor = record.end
             }
             try db.execute("INSERT INTO processing_windows(id,start,end,created_at) VALUES(?,?,?,?)", [.text(window), .number(start.timeIntervalSince1970), .number(end.timeIntervalSince1970), .number(Date().timeIntervalSince1970)])
+            if let visualSelection {
+                try db.execute("UPDATE processing_windows SET visual_selection=? WHERE id=?", [.text(safe(try json(visualSelection))), .text(window)])
+            }
             for project in projects.projects {
                 let assigned = records.filter { $0.projectID == project.id }
                 let firstSeen = assigned.map(\.start).min().map { SQLValue.number($0.timeIntervalSince1970) } ?? .null
@@ -340,6 +348,10 @@ public actor ActivityStore {
     CREATE VIRTUAL TABLE activity_fts USING fts5(activity_id UNINDEXED,body);
     INSERT INTO activity_fts(activity_id,body) SELECT id,payload FROM activities;
     PRAGMA user_version=2;
+    """
+    private static let migration4 = """
+    ALTER TABLE processing_windows ADD COLUMN visual_selection TEXT;
+    PRAGMA user_version=4;
     """
     private static let migration3 = """
     ALTER TABLE evidence ADD COLUMN source_reference TEXT;

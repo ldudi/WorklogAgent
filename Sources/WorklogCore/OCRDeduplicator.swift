@@ -52,10 +52,7 @@ public struct OCRDeduplicator {
     }
 
     private func hasNewOutcome(_ text: String, comparedTo previous: String) -> Bool {
-        let oldLines = Set(previous.lowercased().split(whereSeparator: \.isNewline).map(String.init))
-        return text.lowercased().split(whereSeparator: \.isNewline).contains { line in
-            ["passed", "failed", "error:", "build complete"].contains(where: line.contains) && !oldLines.contains(String(line))
-        }
+        OutcomeSignals.signature(text) != OutcomeSignals.signature(previous)
     }
 
     private func normalize(_ text: String) -> String {
@@ -69,14 +66,14 @@ public struct OCRDeduplicator {
         return lines.joined(separator: "\n")
     }
 
-    private func tokenSet(_ text: String) -> Set<String> {
+    func tokenSet(_ text: String) -> Set<String> {
         let tokens = text.lowercased().split { character in
             !character.isLetter && !character.isNumber && character != "_"
         }
-        return Set(tokens.filter { $0.count > 1 }.map(String.init))
+        return Set(tokens.filter { $0.count > 1 && $0.contains(where: \.isLetter) }.map(String.init))
     }
 
-    private func jaccard(_ lhs: Set<String>, _ rhs: Set<String>) -> Double {
+    func jaccard(_ lhs: Set<String>, _ rhs: Set<String>) -> Double {
         guard !lhs.isEmpty || !rhs.isEmpty else { return 1 }
         let intersection = lhs.intersection(rhs).count
         let union = lhs.union(rhs).count
